@@ -101,7 +101,7 @@ func (p *Peer) update() {
 	// Start the tickers for the updates
 	expire := time.NewTicker(expirationCycle)
 	transmit := time.NewTicker(transmissionCycle)
-
+	hashesTransmit := time.NewTicker(1 * time.Second)
 	// Loop and transmit until termination is requested
 	for {
 		select {
@@ -113,7 +113,11 @@ func (p *Peer) update() {
 				log.Trace("broadcast failed", "reason", err, "peer", p.ID())
 				return
 			}
-
+		case <-hashesTransmit.C:
+			if err := p.broadcastHashes(); err != nil {
+				log.Trace("broadcast of hashes failed", err, "peer", p.ID)
+				return
+			}
 		case <-p.quit:
 			return
 		}
@@ -169,6 +173,15 @@ func (p *Peer) broadcast() error {
 		log.Trace("broadcast", "num. messages", cnt)
 	}
 	return nil
+}
+
+func (p *Peer) broadcastHashes() error {
+	hashes := p.host.LastHashes(5)
+	if len(hashes) == 0 {
+		return nil
+	}
+	log.Info("broadcast", "sending hashes", hashes)
+	return p2p.Send(p.ws, hashesCode, hashes)
 }
 
 func (p *Peer) ID() []byte {
