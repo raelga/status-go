@@ -123,6 +123,9 @@ func (p *Peer) update() {
 // mark marks an envelope known to the peer so that it won't be sent back.
 func (peer *Peer) mark(envelope *Envelope) {
 	peer.known.Add(envelope.Hash())
+	for _, hash := range envelope.Hashes {
+		peer.known.Add(hash)
+	}
 }
 
 // marked checks if an envelope is already known to the remote peer.

@@ -43,6 +43,7 @@ type Envelope struct {
 	AESNonce []byte
 	Data     []byte
 	EnvNonce uint64
+	Hashes   [][]common.Hash
 
 	pow  float64     // Message-specific PoW as described in the Whisper specification.
 	hash common.Hash // Cached hash of the envelope to avoid rehashing every time.
@@ -56,13 +57,19 @@ func (e *Envelope) size() int {
 
 // rlpWithoutNonce returns the RLP encoded envelope contents, except the nonce.
 func (e *Envelope) rlpWithoutNonce() []byte {
-	res, _ := rlp.EncodeToBytes([]interface{}{e.Version, e.Expiry, e.TTL, e.Topic, e.AESNonce, e.Data})
+	res, _ := rlp.EncodeToBytes([]interface{}{e.Version, e.Expiry, e.TTL, e.Topic, e.AESNonce, e.Data, e.Hashes})
+	return res
+}
+
+// rlpWithoutHashes to be used when Hash is computed
+func (e *Envelope) rlpWithoutHashes() []byte {
+	res, _ := rlp.EncodeToBytes([]interface{}{e.Version, e.Expiry, e.TTL, e.Topic, e.AESNonce, e.Data, e.EnvNonce})
 	return res
 }
 
 // NewEnvelope wraps a Whisper message with expiration and destination data
 // included into an envelope for network forwarding.
-func NewEnvelope(ttl uint32, topic TopicType, aesNonce []byte, msg *sentMessage) *Envelope {
+func NewEnvelope(ttl uint32, topic TopicType, hashes [][]common.Hash, aesNonce []byte, msg *sentMessage) *Envelope {
 	env := Envelope{
 		Version:  make([]byte, 1),
 		Expiry:   uint32(time.Now().Add(time.Second * time.Duration(ttl)).Unix()),
@@ -71,6 +78,7 @@ func NewEnvelope(ttl uint32, topic TopicType, aesNonce []byte, msg *sentMessage)
 		AESNonce: aesNonce,
 		Data:     msg.Raw,
 		EnvNonce: 0,
+		Hashes:   hashes,
 	}
 
 	if EnvelopeVersion < 256 {
@@ -167,7 +175,7 @@ func (e *Envelope) powToFirstBit(pow float64) int {
 // Hash returns the SHA3 hash of the envelope, calculating it if not yet done.
 func (e *Envelope) Hash() common.Hash {
 	if (e.hash == common.Hash{}) {
-		encoded, _ := rlp.EncodeToBytes(e)
+		encoded := e.rlpWithoutHashes()
 		e.hash = crypto.Keccak256Hash(encoded)
 	}
 	return e.hash
@@ -241,6 +249,7 @@ func (e *Envelope) Open(watcher *Filter) (msg *ReceivedMessage) {
 		msg.Sent = e.Expiry - e.TTL
 		msg.EnvelopeHash = e.Hash()
 		msg.EnvelopeVersion = e.Ver()
+		msg.Hashes = e.Hashes
 	}
 	return msg
 }

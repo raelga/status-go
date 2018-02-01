@@ -44,6 +44,7 @@ type MessageParams struct {
 	PoW      float64
 	Payload  []byte
 	Padding  []byte
+	Hashes   [][]common.Hash
 }
 
 // SentMessage represents an end-user data packet to transmit through the
@@ -62,12 +63,13 @@ type ReceivedMessage struct {
 	Padding   []byte
 	Signature []byte
 
-	PoW   float64          // Proof of work as described in the Whisper spec
-	Sent  uint32           // Time when the message was posted into the network
-	TTL   uint32           // Maximum time to live allowed for the message
-	Src   *ecdsa.PublicKey // Message recipient (identity used to decode the message)
-	Dst   *ecdsa.PublicKey // Message recipient (identity used to decode the message)
-	Topic TopicType
+	PoW    float64          // Proof of work as described in the Whisper spec
+	Sent   uint32           // Time when the message was posted into the network
+	TTL    uint32           // Maximum time to live allowed for the message
+	Src    *ecdsa.PublicKey // Message recipient (identity used to decode the message)
+	Dst    *ecdsa.PublicKey // Message recipient (identity used to decode the message)
+	Topic  TopicType
+	Hashes [][]common.Hash
 
 	SymKeyHash      common.Hash // The Keccak256Hash of the key, associated with the Topic
 	EnvelopeHash    common.Hash // Message envelope hash to act as a unique id
@@ -245,7 +247,7 @@ func (msg *sentMessage) Wrap(options *MessageParams) (envelope *Envelope, err er
 		return nil, err
 	}
 
-	envelope = NewEnvelope(options.TTL, options.Topic, nonce, msg)
+	envelope = NewEnvelope(options.TTL, options.Topic, options.Hashes, nonce, msg)
 	if err = envelope.Seal(options); err != nil {
 		return nil, err
 	}
