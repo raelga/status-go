@@ -61,9 +61,10 @@ type Whisper struct {
 	symKeys     map[string][]byte            // Symmetric key storage
 	keyMu       sync.RWMutex                 // Mutex associated with key storages
 
-	poolMu      sync.RWMutex              // Mutex to sync the message and expiration pools
-	envelopes   map[common.Hash]*Envelope // Pool of envelopes currently tracked by this node
-	expirations map[uint32]*set.SetNonTS  // Message expiration pool
+	poolMu          sync.RWMutex              // Mutex to sync the message and expiration pools
+	envelopes       map[common.Hash]*Envelope // Pool of envelopes currently tracked by this node
+	envelopesHashes []common.Hash
+	expirations     map[uint32]*set.SetNonTS // Message expiration pool
 
 	peerMu sync.RWMutex       // Mutex to sync the active peer set
 	peers  map[*Peer]struct{} // Set of currently active peers
@@ -89,14 +90,15 @@ func New(cfg *Config) *Whisper {
 	}
 
 	whisper := &Whisper{
-		privateKeys:  make(map[string]*ecdsa.PrivateKey),
-		symKeys:      make(map[string][]byte),
-		envelopes:    make(map[common.Hash]*Envelope),
-		expirations:  make(map[uint32]*set.SetNonTS),
-		peers:        make(map[*Peer]struct{}),
-		messageQueue: make(chan *Envelope, messageQueueLimit),
-		p2pMsgQueue:  make(chan *Envelope, messageQueueLimit),
-		quit:         make(chan struct{}),
+		privateKeys:     make(map[string]*ecdsa.PrivateKey),
+		symKeys:         make(map[string][]byte),
+		envelopes:       make(map[common.Hash]*Envelope),
+		envelopesHashes: []common.Hash{},
+		expirations:     make(map[uint32]*set.SetNonTS),
+		peers:           make(map[*Peer]struct{}),
+		messageQueue:    make(chan *Envelope, messageQueueLimit),
+		p2pMsgQueue:     make(chan *Envelope, messageQueueLimit),
+		quit:            make(chan struct{}),
 	}
 
 	whisper.filters = NewFilters(whisper)
@@ -590,6 +592,7 @@ func (wh *Whisper) runMessageLoop(p *Peer, rw p2p.MsgReadWriter) error {
 	for {
 		// fetch the next packet
 		packet, err := rw.ReadMsg()
+		log.Info("message loop", "peer", p.peer.ID(), "packet", packet.Code)
 		if err != nil {
 			log.Warn("message loop", "peer", p.peer.ID(), "err", err)
 			return err
@@ -603,6 +606,16 @@ func (wh *Whisper) runMessageLoop(p *Peer, rw p2p.MsgReadWriter) error {
 		case statusCode:
 			// this should not happen, but no need to panic; just ignore this message.
 			log.Warn("unxepected status message received", "peer", p.peer.ID())
+		case hashesCode:
+			var hashes []common.Hash
+			err := packet.Decode(&hashes)
+			log.Info("message loop", "hashes", hashes, "err", err, "size", packet.Size)
+			if err != nil {
+				return errors.New("invalid haashes")
+			}
+			for _, hash := range hashes {
+				p.known.Add(hash)
+			}
 		case messagesCode:
 			// decode the contained envelopes
 			var envelope Envelope
@@ -646,6 +659,7 @@ func (wh *Whisper) runMessageLoop(p *Peer, rw p2p.MsgReadWriter) error {
 		default:
 			// New message types might be implemented in the future versions of Whisper.
 			// For forward compatibility, just ignore.
+			log.Error("packet code", packet.Code)
 		}
 
 		packet.Discard()
@@ -703,6 +717,7 @@ func (wh *Whisper) add(envelope *Envelope) (bool, error) {
 	_, alreadyCached := wh.envelopes[hash]
 	if !alreadyCached {
 		wh.envelopes[hash] = envelope
+		wh.envelopesHashes = append(wh.envelopesHashes, hash)
 		if wh.expirations[envelope.Expiry] == nil {
 			wh.expirations[envelope.Expiry] = set.NewNonTS()
 		}
@@ -855,6 +870,20 @@ func (w *Whisper) Envelopes() []*Envelope {
 		all = append(all, envelope)
 	}
 	return all
+}
+
+func (w *Whisper) LastHashes(n int) []common.Hash {
+	w.poolMu.RLock()
+	defer w.poolMu.RUnlock()
+	envLen := len(w.envelopesHashes)
+	if envLen < n {
+		n = envLen
+	}
+	hashes := make([]common.Hash, 0, n)
+	for i := 1; i <= n; i++ {
+		hashes = append(hashes, w.envelopesHashes[envLen-i])
+	}
+	return hashes
 }
 
 // Messages iterates through all currently floating envelopes

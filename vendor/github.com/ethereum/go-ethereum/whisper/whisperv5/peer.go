@@ -34,20 +34,21 @@ type Peer struct {
 	ws      p2p.MsgReadWriter
 	trusted bool
 
-	known *set.Set // Messages already known by the peer to avoid wasting bandwidth
-
-	quit chan struct{}
+	known      *set.Set // Messages already known by the peer to avoid wasting bandwidth
+	advertised *set.Set
+	quit       chan struct{}
 }
 
 // newPeer creates a new whisper peer object, but does not run the handshake itself.
 func newPeer(host *Whisper, remote *p2p.Peer, rw p2p.MsgReadWriter) *Peer {
 	return &Peer{
-		host:    host,
-		peer:    remote,
-		ws:      rw,
-		trusted: false,
-		known:   set.New(),
-		quit:    make(chan struct{}),
+		host:       host,
+		peer:       remote,
+		ws:         rw,
+		trusted:    false,
+		known:      set.New(),
+		advertised: set.New(),
+		quit:       make(chan struct{}),
 	}
 }
 
@@ -101,7 +102,7 @@ func (p *Peer) update() {
 	// Start the tickers for the updates
 	expire := time.NewTicker(expirationCycle)
 	transmit := time.NewTicker(transmissionCycle)
-
+	hashesTransmit := time.NewTicker(80 * time.Millisecond)
 	// Loop and transmit until termination is requested
 	for {
 		select {
@@ -113,7 +114,11 @@ func (p *Peer) update() {
 				log.Trace("broadcast failed", "reason", err, "peer", p.ID())
 				return
 			}
-
+		case <-hashesTransmit.C:
+			if err := p.broadcastHashes(); err != nil {
+				log.Trace("broadcast of hashes failed", err, "peer", p.ID)
+				return
+			}
 		case <-p.quit:
 			return
 		}
@@ -164,6 +169,30 @@ func (p *Peer) broadcast() error {
 	}
 	if cnt > 0 {
 		log.Trace("broadcast", "num. messages", cnt)
+	}
+	return nil
+}
+
+func (p *Peer) broadcastHashes() error {
+	hashes := p.host.LastHashes(10)
+	if len(hashes) == 0 {
+		return nil
+	}
+	rst := []common.Hash{}
+	for _, hash := range hashes {
+		if !p.advertised.Has(hash) {
+			rst = append(rst, hash)
+		}
+	}
+	if len(rst) == 0 {
+		return nil
+	}
+	log.Info("broadcast", "sending hashes", rst)
+	if err := p2p.Send(p.ws, hashesCode, rst); err != nil {
+		return err
+	}
+	for _, hash := range rst {
+		p.advertised.Add(hash)
 	}
 	return nil
 }
