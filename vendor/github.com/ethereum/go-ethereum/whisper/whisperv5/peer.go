@@ -36,6 +36,7 @@ type Peer struct {
 
 	known      *set.Set // Messages already known by the peer to avoid wasting bandwidth
 	advertised *set.Set
+	hashes     chan common.Hash
 	quit       chan struct{}
 }
 
@@ -48,6 +49,7 @@ func newPeer(host *Whisper, remote *p2p.Peer, rw p2p.MsgReadWriter) *Peer {
 		trusted:    false,
 		known:      set.New(),
 		advertised: set.New(),
+		hashes:     make(chan common.Hash, 20),
 		quit:       make(chan struct{}),
 	}
 }
@@ -103,6 +105,7 @@ func (p *Peer) update() {
 	expire := time.NewTicker(expirationCycle)
 	transmit := time.NewTicker(transmissionCycle)
 	hashesTransmit := time.NewTicker(80 * time.Millisecond)
+	hashes := make([]common.Hash, 0, 10)
 	// Loop and transmit until termination is requested
 	for {
 		select {
@@ -115,9 +118,21 @@ func (p *Peer) update() {
 				return
 			}
 		case <-hashesTransmit.C:
-			if err := p.broadcastHashes(); err != nil {
+			if err := p.broadcastHashes(hashes); err != nil {
 				log.Trace("broadcast of hashes failed", err, "peer", p.ID)
 				return
+			}
+			hashes = make([]common.Hash, 0, 10)
+		case hash := <-p.hashes:
+			if !p.advertised.Has(hash) {
+				hashes = append(hashes, hash)
+			}
+			if len(hashes) == 10 {
+				if err := p.broadcastHashes(hashes); err != nil {
+					log.Trace("broadcast of hashes failed", err, "peer", p.ID)
+					return
+				}
+				hashes = make([]common.Hash, 0, 10)
 			}
 		case <-p.quit:
 			return
@@ -151,6 +166,10 @@ func (peer *Peer) expire() {
 	}
 }
 
+func (p *Peer) addHash(hash common.Hash) {
+	p.hashes <- hash
+}
+
 // broadcast iterates over the collection of envelopes and transmits yet unknown
 // ones over the network.
 func (p *Peer) broadcast() error {
@@ -173,25 +192,15 @@ func (p *Peer) broadcast() error {
 	return nil
 }
 
-func (p *Peer) broadcastHashes() error {
-	hashes := p.host.LastHashes(10)
+func (p *Peer) broadcastHashes(hashes []common.Hash) error {
 	if len(hashes) == 0 {
 		return nil
 	}
-	rst := []common.Hash{}
-	for _, hash := range hashes {
-		if !p.advertised.Has(hash) {
-			rst = append(rst, hash)
-		}
-	}
-	if len(rst) == 0 {
-		return nil
-	}
-	log.Info("broadcast", "sending hashes", rst)
-	if err := p2p.Send(p.ws, hashesCode, rst); err != nil {
+	log.Info("broadcast", "hashes", hashes)
+	if err := p2p.Send(p.ws, hashesCode, hashes); err != nil {
 		return err
 	}
-	for _, hash := range rst {
+	for _, hash := range hashes {
 		p.advertised.Add(hash)
 	}
 	return nil
